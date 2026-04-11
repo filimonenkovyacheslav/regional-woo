@@ -1,2 +1,2 @@
 # regional-woo
-Plagin for WordPress
+Plugin for WordPress
