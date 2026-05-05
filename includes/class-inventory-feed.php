@@ -17,7 +17,7 @@ class Rockside_Regional_Inventory_Feed {
     }
 
     public function register_feed_endpoint() {
-        add_rewrite_rule('^regional-feed/(kyiv|lviv)/?$', 'index.php?rockside_regional_feed=$matches[1]', 'top');
+        add_rewrite_rule('^regional-feed/(kyiv|lviv|odesa)/?$', 'index.php?rockside_regional_feed=$matches[1]', 'top');
         add_rewrite_tag('%rockside_regional_feed%', '([^&]+)');
 
         add_action('template_redirect', array($this, 'render_feed_if_requested'));
@@ -26,7 +26,7 @@ class Rockside_Regional_Inventory_Feed {
     public function render_feed_if_requested() {
         $region = get_query_var('rockside_regional_feed');
 
-        if (!$region || !in_array($region, array('kyiv', 'lviv'), true)) {
+        if (!$region || !in_array($region, array('kyiv', 'lviv', 'odesa'), true)) {
             return;
         }
 
@@ -91,8 +91,9 @@ class Rockside_Regional_Inventory_Feed {
 
     private function get_google_region_id($region) {
         $map = array(
-            'kyiv' => 'kyiv',
-            'lviv' => 'lviv',
+            'kyiv'  => 'kyiv',
+            'lviv'  => 'lviv',
+            'odesa' => 'odesa',
         );
 
         return isset($map[$region]) ? $map[$region] : '';
@@ -104,6 +105,8 @@ class Rockside_Regional_Inventory_Feed {
                 return '_price_kyiv';
             case 'lviv':
                 return '_price_lviv';
+            case 'odesa':
+                return '_price_odesa';
             default:
                 return '';
         }
@@ -115,6 +118,8 @@ class Rockside_Regional_Inventory_Feed {
                 return '_hide_in_kyiv';
             case 'lviv':
                 return '_hide_in_lviv';
+            case 'odesa':
+                return '_hide_in_odesa';
             default:
                 return '';
         }
@@ -127,6 +132,10 @@ class Rockside_Regional_Inventory_Feed {
 
         if ($region === 'lviv') {
             return '_rockside_hide_in_lviv';
+        }
+
+        if ($region === 'odesa') {
+            return '_rockside_hide_in_odesa';
         }
 
         return '';
@@ -171,6 +180,11 @@ class Rockside_Regional_Inventory_Feed {
         $check_id = $parent_id ?: $product_id;
 
         if ($this->is_enabled_hide_flag(get_post_meta($check_id, $meta_key, true))) {
+            return true;
+        }
+
+        // окремий hide flag на самій варіації
+        if ($parent_id && $this->is_enabled_hide_flag(get_post_meta($product_id, $meta_key, true))) {
             return true;
         }
 
@@ -296,7 +310,8 @@ class Rockside_Regional_Inventory_Feed {
         if (
             strpos($basename, 'regional') !== false ||
             strpos($basename, 'kyiv') !== false ||
-            strpos($basename, 'lviv') !== false
+            strpos($basename, 'lviv') !== false ||
+            strpos($basename, 'odesa') !== false
         ) {
             return false;
         }

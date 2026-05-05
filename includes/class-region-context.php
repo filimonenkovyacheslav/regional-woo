@@ -27,6 +27,12 @@ class Rockside_Regional_Region_Context {
             'region_id'  => 'lviv',
             'is_default' => false,
         ),
+        'odesa' => array(
+            'label'      => 'Одеса',
+            'slug'       => 'odesa',
+            'region_id'  => 'odesa',
+            'is_default' => false,
+        ),
     );
 
     public function boot() {
@@ -37,6 +43,104 @@ class Rockside_Regional_Region_Context {
         add_filter('request', array($this, 'rockside_map_regional_singular_request'), 11);
         add_action('parse_query', array($this, 'normalize_regional_main_query'), 1);
         add_filter('redirect_canonical', array($this, 'disable_regional_home_canonical'), 10, 2);
+
+        add_action('template_redirect', array($this, 'maybe_404_disabled_region'), 0);
+    }
+
+    private function get_enabled_regions() {
+        $enabled = get_option('rockside_enabled_switcher_regions', array());
+
+        if (!is_array($enabled) || empty($enabled)) {
+            return array('kharkiv');
+        }
+
+        $clean = array();
+
+        foreach ($enabled as $region) {
+            $region = sanitize_key($region);
+
+            if ($this->is_valid_region($region)) {
+                $clean[] = $region;
+            }
+        }
+
+        if (empty($clean)) {
+            return array('kharkiv');
+        }
+
+        return array_values(array_unique($clean));
+    }
+
+    private function is_region_enabled($region) {
+        if ($region === 'kharkiv') {
+            return true;
+        }
+
+        return in_array($region, $this->get_enabled_regions(), true);
+    }
+
+    private function get_requested_region_from_path() {
+        $request_uri = '/';
+
+        if (!empty($_SERVER['REQUEST_URI'])) {
+            $request_uri = (string) wp_unslash($_SERVER['REQUEST_URI']);
+        }
+
+        $path = (string) wp_parse_url($request_uri, PHP_URL_PATH);
+        $path = trim($path, '/');
+
+        if ($path === '') {
+            return 'kharkiv';
+        }
+
+        $segments = array_values(array_filter(explode('/', $path), 'strlen'));
+        if (empty($segments)) {
+            return 'kharkiv';
+        }
+
+        $known_regions = array('kyiv', 'lviv', 'odesa');
+        $known_langs   = array('ru', 'uk');
+
+        if (in_array(strtolower($segments[0]), $known_regions, true)) {
+            return strtolower($segments[0]);
+        }
+
+        if (
+            in_array(strtolower($segments[0]), $known_langs, true) &&
+            !empty($segments[1]) &&
+            in_array(strtolower($segments[1]), $known_regions, true)
+        ) {
+            return strtolower($segments[1]);
+        }
+
+        return 'kharkiv';
+    }
+
+    public function maybe_404_disabled_region() {
+        if (is_admin()) {
+            return;
+        }
+
+        $region = $this->get_requested_region_from_path();
+
+        if ($region === 'kharkiv') {
+            return;
+        }
+
+        if ($this->is_region_enabled($region)) {
+            return;
+        }
+
+        global $wp_query;
+
+        if ($wp_query) {
+            $wp_query->set_404();
+            status_header(404);
+            nocache_headers();
+        }
+
+        include get_query_template('404');
+        exit;
     }
 
     public function disable_regional_home_canonical($redirect_url, $requested_url) {
@@ -52,8 +156,7 @@ class Rockside_Regional_Region_Context {
         $path = (string) wp_parse_url($request_uri, PHP_URL_PATH);
         $path = trim($path, '/');
 
-        // Не даємо WordPress канонікалізувати регіональну головну
-        if ($path === 'kyiv' || $path === 'lviv') {
+        if ($path === 'kyiv' || $path === 'lviv' || $path === 'odesa') {
             return false;
         }
 
@@ -79,10 +182,9 @@ class Rockside_Regional_Region_Context {
             return $result;
         }
 
-        $known_regions = array('kyiv', 'lviv');
+        $known_regions = array('kyiv', 'lviv', 'odesa');
         $known_langs   = array('ru', 'uk');
 
-        // Вариант 1: /kyiv/ru/...
         if (!empty($segments[0]) && in_array(strtolower($segments[0]), $known_regions, true)) {
             $result['region'] = strtolower($segments[0]);
 
@@ -96,7 +198,6 @@ class Rockside_Regional_Region_Context {
             return $result;
         }
 
-        // Вариант 2: /ru/kyiv/...
         if (!empty($segments[0]) && in_array(strtolower($segments[0]), $known_langs, true)) {
             $result['lang'] = strtolower($segments[0]);
 
@@ -110,7 +211,6 @@ class Rockside_Regional_Region_Context {
             return $result;
         }
 
-        // Без явного языка и без региона
         $result['rest'] = implode('/', $segments);
 
         return $result;
@@ -130,7 +230,6 @@ class Rockside_Regional_Region_Context {
             return;
         }
 
-        // Если грузим linked page — убираем конфликтующие vars
         if ($query->get('page_id')) {
             $query->set('pagename', '');
             $query->set('name', '');
@@ -139,7 +238,6 @@ class Rockside_Regional_Region_Context {
             $query->set('error', '');
         }
 
-        // Если грузим linked post — тоже чистим конфликтующие vars
         if ($query->get('p')) {
             $query->set('name', '');
             $query->set('pagename', '');
@@ -152,53 +250,64 @@ class Rockside_Regional_Region_Context {
     public function register_rewrite() {
         add_rewrite_tag('%' . self::QUERY_VAR . '%', '([^&]+)');
 
-        /**
-         * WOODMART PORTFOLIO / PROJECT CAT
-         * Не делаем региональные копии, а просто разрешаем открывать
-         * одинаковый контент через /kyiv/... и /lviv/...
-         */
-
-        // Archive: /kyiv/portfolio/ , /lviv/portfolio/
+        // PAGINATION RULES
         add_rewrite_rule(
-            '^(kyiv|lviv)/portfolio/?$',
+            '^(kyiv|lviv|odesa)/product-category/(.+?)/page/([0-9]{1,})/?$',
+            'index.php?product_cat=$matches[2]&paged=$matches[3]&' . self::QUERY_VAR . '=$matches[1]',
+            'top'
+        );
+
+        add_rewrite_rule(
+            '^(kyiv|lviv|odesa)/portfolio/page/([0-9]{1,})/?$',
+            'index.php?post_type=portfolio&paged=$matches[2]&' . self::QUERY_VAR . '=$matches[1]',
+            'top'
+        );
+
+        add_rewrite_rule(
+            '^(kyiv|lviv|odesa)/project-cat/([^/]+)/page/([0-9]{1,})/?$',
+            'index.php?taxonomy=project-cat&term=$matches[2]&paged=$matches[3]&' . self::QUERY_VAR . '=$matches[1]',
+            'top'
+        );
+
+        // BASE RULES
+        add_rewrite_rule(
+            '^(kyiv|lviv|odesa)/portfolio/?$',
             'index.php?post_type=portfolio&' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
 
-        // Single: /kyiv/portfolio/some-project/ , /lviv/portfolio/some-project/
         add_rewrite_rule(
-            '^(kyiv|lviv)/portfolio/([^/]+)/?$',
+            '^(kyiv|lviv|odesa)/portfolio/([^/]+)/?$',
             'index.php?post_type=portfolio&name=$matches[2]&' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
 
-        // Taxonomy: /kyiv/project-cat/fontany/ , /lviv/project-cat/fontany/
         add_rewrite_rule(
-            '^(kyiv|lviv)/project-cat/([^/]+)/?$',
+            '^(kyiv|lviv|odesa)/project-cat/([^/]+)/?$',
             'index.php?taxonomy=project-cat&term=$matches[2]&' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
 
         add_rewrite_rule(
-            '^(kyiv|lviv)/product/(.+)/?$',
+            '^(kyiv|lviv|odesa)/product/(.+)/?$',
             'index.php?post_type=product&name=$matches[2]&' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
 
         add_rewrite_rule(
-            '^(kyiv|lviv)/product-category/(.+)/?$',
+            '^(kyiv|lviv|odesa)/product-category/(.+)/?$',
             'index.php?product_cat=$matches[2]&' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
 
         add_rewrite_rule(
-            '^(kyiv|lviv)/(.+?)/?$',
+            '^(kyiv|lviv|odesa)/(.+?)/?$',
             'index.php?pagename=$matches[2]&' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
 
         add_rewrite_rule(
-            '^(kyiv|lviv)/([^/]+)/?$',
+            '^(kyiv|lviv|odesa)/([^/]+)/?$',
             'index.php?name=$matches[2]&' . self::QUERY_VAR . '=$matches[1]',
             'top'
         );
@@ -215,7 +324,6 @@ class Rockside_Regional_Region_Context {
             return $query_vars;
         }
 
-        // Поиск не трогаем
         if (!empty($_GET['s'])) {
             return $query_vars;
         }
@@ -228,16 +336,17 @@ class Rockside_Regional_Region_Context {
         $parts = wp_parse_url($request_uri);
         $path  = isset($parts['path']) ? trim($parts['path'], '/') : '';
 
-        // Определяем регион сначала из path, потом из region_id
         $region = 'kharkiv';
 
         if ($path === 'kyiv' || strpos($path, 'kyiv/') === 0) {
             $region = 'kyiv';
         } elseif ($path === 'lviv' || strpos($path, 'lviv/') === 0) {
             $region = 'lviv';
+        } elseif ($path === 'odesa' || strpos($path, 'odesa/') === 0) {
+            $region = 'odesa';
         } elseif (!empty($_GET['region_id'])) {
             $candidate = sanitize_key(wp_unslash($_GET['region_id']));
-            if ($this->is_valid_region($candidate)) {
+            if ($this->is_valid_region($candidate) && $this->is_region_enabled($candidate)) {
                 $region = $candidate;
             }
         }
@@ -246,14 +355,12 @@ class Rockside_Regional_Region_Context {
             return $query_vars;
         }
 
-        // Обрабатываем только главную:
-        // /
-        // /?region_id=kyiv
-        // /?region_id=lviv
-        // /kyiv/
-        // /lviv/
+        if (!$this->is_region_enabled($region)) {
+            return $query_vars;
+        }
+
         $is_home_root = ($path === '');
-        $is_home_regional_path = ($path === 'kyiv' || $path === 'lviv');
+        $is_home_regional_path = ($path === 'kyiv' || $path === 'lviv' || $path === 'odesa');
 
         if (!$is_home_root && !$is_home_regional_path) {
             return $query_vars;
@@ -270,6 +377,8 @@ class Rockside_Regional_Region_Context {
             $linked_page_id = (int) get_post_meta($base_page_id, '_rockside_kyiv_page_id', true);
         } elseif ($region === 'lviv') {
             $linked_page_id = (int) get_post_meta($base_page_id, '_rockside_lviv_page_id', true);
+        } elseif ($region === 'odesa') {
+            $linked_page_id = (int) get_post_meta($base_page_id, '_rockside_odesa_page_id', true);
         }
 
         $target_page_id = $linked_page_id ?: $base_page_id;
@@ -290,15 +399,18 @@ class Rockside_Regional_Region_Context {
         $parsed = $this->parse_regional_path($path);
         $region = $parsed['region'];
 
-        // region_id имеет приоритет только если в path нет явного региона
         if (
             $region === 'kharkiv' &&
             !empty($_GET['region_id'])
         ) {
             $candidate = sanitize_key(wp_unslash($_GET['region_id']));
-            if ($this->is_valid_region($candidate)) {
+            if ($this->is_valid_region($candidate) && $this->is_region_enabled($candidate)) {
                 $region = $candidate;
             }
+        }
+
+        if (!$this->is_region_enabled($region)) {
+            $region = 'kharkiv';
         }
 
         $this->set_current_region($region);
@@ -343,13 +455,12 @@ class Rockside_Regional_Region_Context {
 
         $segments = array_values(array_filter(explode('/', $path), 'strlen'));
 
-        $known_regions = array('kyiv', 'lviv');
+        $known_regions = array('kyiv', 'lviv', 'odesa');
         $known_langs   = array('ru', 'uk');
 
         $lang = '';
         $rest_segments = $segments;
 
-        // Полностью очищаем начало URL от повторяющихся lang/region префиксов.
         while (!empty($rest_segments)) {
             $first = strtolower($rest_segments[0]);
 
@@ -371,12 +482,10 @@ class Rockside_Regional_Region_Context {
 
         $new_segments = array();
 
-        // На сайте язык идет первым.
         if ($lang !== '') {
             $new_segments[] = $lang;
         }
 
-        // Для неосновного региона добавляем региональный префикс.
         if ($region !== 'kharkiv') {
             $slug = $this->get_region_slug($region);
             if ($slug !== '') {
@@ -418,6 +527,8 @@ class Rockside_Regional_Region_Context {
                 return '_price_kyiv';
             case 'lviv':
                 return '_price_lviv';
+            case 'odesa':
+                return '_price_odesa';
             default:
                 return '';
         }
@@ -429,6 +540,8 @@ class Rockside_Regional_Region_Context {
                 return '_hide_in_kyiv';
             case 'lviv':
                 return '_hide_in_lviv';
+            case 'odesa':
+                return '_hide_in_odesa';
             default:
                 return '';
         }
@@ -456,35 +569,40 @@ class Rockside_Regional_Region_Context {
             $region = 'kyiv';
         } elseif ($path === 'lviv' || strpos($path, 'lviv/') === 0) {
             $region = 'lviv';
+        } elseif ($path === 'odesa' || strpos($path, 'odesa/') === 0) {
+            $region = 'odesa';
         }
 
         if ($region === 'kharkiv') {
             return $query_vars;
         }
 
-        if ($path === '' || $path === 'kyiv' || $path === 'lviv') {
+        if (!$this->is_region_enabled($region)) {
             return $query_vars;
         }
 
-        $clean_path = preg_replace('#^(kyiv|lviv)(/|$)#', '', $path);
+        if ($path === '' || $path === 'kyiv' || $path === 'lviv' || $path === 'odesa') {
+            return $query_vars;
+        }
+
+        $clean_path = preg_replace('#^(kyiv|lviv|odesa)(/|$)#', '', $path);
         $clean_path = trim((string) $clean_path, '/');
 
         if ($clean_path === '') {
             return $query_vars;
         }
 
-        // ---------- WOODMART PORTFOLIO / PROJECT CAT ----------
-        // Не делаем региональную подмену page/post для портфолио и его категорий.
         if (
             $clean_path === 'portfolio' ||
             strpos($clean_path, 'portfolio/') === 0 ||
             $clean_path === 'project-cat' ||
-            strpos($clean_path, 'project-cat/') === 0
+            strpos($clean_path, 'project-cat/') === 0 ||
+            strpos($clean_path, 'product-category/') === 0 ||
+            strpos($clean_path, 'product/') === 0
         ) {
             return $query_vars;
         }
 
-        // ---------- PAGE ----------
         $base_page = get_page_by_path($clean_path, OBJECT, 'page');
 
         if ($base_page && !empty($base_page->ID)) {
@@ -495,6 +613,8 @@ class Rockside_Regional_Region_Context {
                 $linked_page_id = (int) get_post_meta($base_page_id, '_rockside_kyiv_page_id', true);
             } elseif ($region === 'lviv') {
                 $linked_page_id = (int) get_post_meta($base_page_id, '_rockside_lviv_page_id', true);
+            } elseif ($region === 'odesa') {
+                $linked_page_id = (int) get_post_meta($base_page_id, '_rockside_odesa_page_id', true);
             }
 
             $target_page_id = $linked_page_id ?: $base_page_id;
@@ -506,7 +626,6 @@ class Rockside_Regional_Region_Context {
             );
         }
 
-        // ---------- POST ----------
         $base_post = get_page_by_path($clean_path, OBJECT, 'post');
 
         if ($base_post && !empty($base_post->ID)) {
@@ -517,6 +636,8 @@ class Rockside_Regional_Region_Context {
                 $linked_post_id = (int) get_post_meta($base_post_id, '_rockside_kyiv_page_id', true);
             } elseif ($region === 'lviv') {
                 $linked_post_id = (int) get_post_meta($base_post_id, '_rockside_lviv_page_id', true);
+            } elseif ($region === 'odesa') {
+                $linked_post_id = (int) get_post_meta($base_post_id, '_rockside_odesa_page_id', true);
             }
 
             $target_post_id = $linked_post_id ?: $base_post_id;

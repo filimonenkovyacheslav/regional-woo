@@ -21,6 +21,33 @@ class Rockside_Regional_Popup {
         return get_option('rockside_region_popup_enabled', 'yes') === 'yes';
     }
 
+    private function get_enabled_regions_for_popup() {
+        $all_regions = $this->context->get_regions();
+        $enabled = get_option('rockside_enabled_switcher_regions', array());
+
+        if (!is_array($enabled) || empty($enabled)) {
+            return array(
+                'kharkiv' => $all_regions['kharkiv'],
+            );
+        }
+
+        $result = array();
+
+        foreach ($enabled as $region_key) {
+            $region_key = sanitize_key($region_key);
+
+            if (isset($all_regions[$region_key])) {
+                $result[$region_key] = $all_regions[$region_key];
+            }
+        }
+
+        if (empty($result)) {
+            $result['kharkiv'] = $all_regions['kharkiv'];
+        }
+
+        return $result;
+    }
+
     public function register_assets() {
         if (!$this->is_popup_enabled()) {
             return;
@@ -165,7 +192,13 @@ class Rockside_Regional_Popup {
 
         wp_register_script('rockside-region-popup', false, array(), ROCKSIDE_REGIONAL_VERSION, true);
 
+        $enabled_regions = $this->get_enabled_regions_for_popup();
         $recommended_region = $this->get_recommended_region();
+
+        if (!isset($enabled_regions[$recommended_region])) {
+            $keys = array_keys($enabled_regions);
+            $recommended_region = !empty($keys) ? $keys[0] : 'kharkiv';
+        }
 
         $config = array(
             'enabled' => $this->is_popup_enabled(),
@@ -272,9 +305,22 @@ class Rockside_Regional_Popup {
             return;
         }
 
+        $regions = $this->get_enabled_regions_for_popup();
+        if (empty($regions)) {
+            return;
+        }
+
         $recommended_region = $this->get_recommended_region();
-        $current_region     = $this->context->get_current_region();
-        $regions            = $this->context->get_regions();
+        if (!isset($regions[$recommended_region])) {
+            $keys = array_keys($regions);
+            $recommended_region = !empty($keys) ? $keys[0] : 'kharkiv';
+        }
+
+        $current_region = $this->context->get_current_region();
+        if (!isset($regions[$current_region])) {
+            $keys = array_keys($regions);
+            $current_region = !empty($keys) ? $keys[0] : 'kharkiv';
+        }
         ?>
         <div class="rockside-region-popup-overlay"></div>
         <div
@@ -329,6 +375,10 @@ class Rockside_Regional_Popup {
                 $region_name = mb_strtolower((string) $record->mostSpecificSubdivision->name);
             }
 
+            $south = array(
+                'odesa', 'odessa', 'mykolaiv', 'nikolaev', 'kherson'
+            );
+
             $west = array(
                 'lviv', 'lvov', 'ivano-frankivsk', 'ternopil', 'volyn',
                 'lutsk', 'zakarpattia', 'uzhhorod', 'chernivtsi', 'rivne',
@@ -339,6 +389,12 @@ class Rockside_Regional_Popup {
                 'kyiv', 'kiev', 'vinnytsia', 'zhytomyr', 'cherkasy',
                 'kirovohrad', 'kropyvnytskyi', 'poltava', 'chernihiv', 'sumy'
             );
+
+            foreach ($south as $needle) {
+                if ($region_name !== '' && strpos($region_name, $needle) !== false) {
+                    return 'odesa';
+                }
+            }
 
             foreach ($west as $needle) {
                 if ($region_name !== '' && strpos($region_name, $needle) !== false) {
@@ -370,7 +426,7 @@ class Rockside_Regional_Popup {
     private function get_region_urls() {
         $urls = array();
 
-        foreach ($this->context->get_regions() as $region_key => $region_data) {
+        foreach ($this->get_enabled_regions_for_popup() as $region_key => $region_data) {
             $urls[$region_key] = $this->build_region_home_url($region_key);
         }
 
@@ -425,7 +481,7 @@ class Rockside_Regional_Popup {
 
         $segments = array_values(array_filter(explode('/', $path), 'strlen'));
 
-        $known_regions = array('kyiv', 'lviv');
+        $known_regions = array('kyiv', 'lviv', 'odesa');
         $known_langs   = array('ru', 'uk');
 
         $lang = '';

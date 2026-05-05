@@ -129,12 +129,10 @@ class Rockside_Regional_SEO {
 
         $normalized_path = trim((string) $path, '/');
 
-        // Для непустых путей не вмешиваемся.
         if ($normalized_path !== '') {
             return $url;
         }
 
-        // ВАЖНО: не вызывать home_url('/') внутри фильтра home_url.
         return $this->context->build_regional_url($url, $region);
     }
 
@@ -252,14 +250,12 @@ class Rockside_Regional_SEO {
             $filtered[] = $item;
         }
 
-        // Убираем дочерние пункты скрытых родительских элементов
         if (!empty($hidden_ids)) {
             $filtered = array_filter($filtered, function ($item) use ($hidden_ids) {
                 return !in_array((int) $item->menu_item_parent, $hidden_ids, true);
             });
         }
 
-        // Регионализируем ссылки только для оставшихся пунктов
         if ($region !== 'kharkiv') {
             foreach ($filtered as $item) {
                 if (empty($item->url)) {
@@ -343,6 +339,10 @@ class Rockside_Regional_SEO {
             return (int) get_post_meta($base_page_id, '_rockside_lviv_page_id', true) > 0;
         }
 
+        if ($region === 'odesa') {
+            return (int) get_post_meta($base_page_id, '_rockside_odesa_page_id', true) > 0;
+        }
+
         return false;
     }
 
@@ -373,12 +373,15 @@ class Rockside_Regional_SEO {
 
         if (is_search()) {
             $region = $this->context->get_current_region();
+
             return add_query_arg(
-                array(
-                    's' => get_search_query(),
+                array_filter(array(
+                    's'         => get_search_query(),
                     'post_type' => isset($_GET['post_type']) ? sanitize_text_field(wp_unslash($_GET['post_type'])) : '',
                     'region_id' => $region !== 'kharkiv' ? $region : null,
-                ),
+                ), function ($value) {
+                    return $value !== null && $value !== '';
+                }),
                 home_url('/')
             );
         }
@@ -451,12 +454,16 @@ class Rockside_Regional_SEO {
 
         $map = array(
             'kyiv' => array(
-                'title' => '_rockside_kyiv_title',
+                'title'       => '_rockside_kyiv_title',
                 'description' => '_rockside_kyiv_description',
             ),
             'lviv' => array(
-                'title' => '_rockside_lviv_title',
+                'title'       => '_rockside_lviv_title',
                 'description' => '_rockside_lviv_description',
+            ),
+            'odesa' => array(
+                'title'       => '_rockside_odesa_title',
+                'description' => '_rockside_odesa_description',
             ),
         );
 
@@ -465,6 +472,22 @@ class Rockside_Regional_SEO {
         }
 
         return trim((string) get_post_meta($base_page_id, $map[$region][$field], true));
+    }
+
+    private function get_term_hide_meta_key_for_region($region) {
+        if ($region === 'kyiv') {
+            return '_rockside_hide_in_kyiv';
+        }
+
+        if ($region === 'lviv') {
+            return '_rockside_hide_in_lviv';
+        }
+
+        if ($region === 'odesa') {
+            return '_rockside_hide_in_odesa';
+        }
+
+        return '';
     }
 
     private function is_term_hidden_in_current_region($term_id, $taxonomy = '') {
@@ -478,7 +501,7 @@ class Rockside_Regional_SEO {
             return false;
         }
 
-        $hide_meta_key = $this->context->get_region_hide_meta_key($region);
+        $hide_meta_key = $this->get_term_hide_meta_key_for_region($region);
         if (!$hide_meta_key) {
             return false;
         }
@@ -493,21 +516,29 @@ class Rockside_Regional_SEO {
             return false;
         }
 
-        // Пункт меню = категория WooCommerce
         if ($item->object === 'product_cat' && !empty($item->object_id)) {
             return $this->is_term_hidden_in_current_region((int) $item->object_id, 'product_cat');
         }
 
-        // Кастомная ссылка — пробуем определить по URL
         if ($item->object === 'custom' && !empty($item->url)) {
             $term_id = url_to_postid($item->url);
             if ($term_id) {
                 return false;
             }
 
-            $term = get_term_by('slug', basename(untrailingslashit(parse_url($item->url, PHP_URL_PATH))), 'product_cat');
-            if ($term && !is_wp_error($term)) {
-                return $this->is_term_hidden_in_current_region((int) $term->term_id, 'product_cat');
+            $path = (string) parse_url($item->url, PHP_URL_PATH);
+            $path = trim($path, '/');
+            $path = preg_replace('#^(ru|uk)/#', '', $path);
+            $path = preg_replace('#^(kyiv|lviv|odesa)/#', '', $path);
+
+            $segments = array_values(array_filter(explode('/', $path)));
+            $slug = !empty($segments) ? end($segments) : '';
+
+            if ($slug !== '') {
+                $term = get_term_by('slug', $slug, 'product_cat');
+                if ($term && !is_wp_error($term)) {
+                    return $this->is_term_hidden_in_current_region((int) $term->term_id, 'product_cat');
+                }
             }
         }
 

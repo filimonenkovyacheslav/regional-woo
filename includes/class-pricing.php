@@ -11,9 +11,6 @@ class Rockside_Regional_Pricing {
     /** @var bool */
     private $is_collecting_blocked_terms = false;
 
-    /** @var bool */
-    private $hidden_category_mode = false;
-
     public function __construct(Rockside_Regional_Region_Context $context) {
         $this->context = $context;
     }
@@ -21,7 +18,9 @@ class Rockside_Regional_Pricing {
     public function boot() {
         add_filter('woocommerce_product_get_price', array($this, 'filter_product_price'), 9999, 2);
         add_filter('woocommerce_product_get_regular_price', array($this, 'filter_product_price'), 9999, 2);
+
         add_filter('woocommerce_get_price_html', array($this, 'maybe_hide_price_html'), 9999, 2);
+        add_filter('woocommerce_variable_price_html', array($this, 'filter_variable_price_html_by_region'), 9999, 2);
 
         add_filter('woocommerce_is_purchasable', array($this, 'filter_product_purchasable_by_region'), 9999, 2);
         add_filter('woocommerce_variation_is_purchasable', array($this, 'filter_product_purchasable_by_region'), 9999, 2);
@@ -43,327 +42,16 @@ class Rockside_Regional_Pricing {
 
         add_action('woocommerce_product_query', array($this, 'filter_catalog_queries'), 9999, 2);
         add_action('pre_get_posts', array($this, 'filter_frontend_product_queries_by_region'), 9999);
+        add_filter('the_posts', array($this, 'filter_catalog_posts_with_hidden_variations'), 9999, 2);
 
         add_filter('woocommerce_related_products', array($this, 'filter_related_products'), 9999, 3);
 
         add_filter('woocommerce_available_variation', array($this, 'filter_available_variation_by_region'), 10, 3);
         add_filter('woocommerce_variation_is_active', array($this, 'keep_hidden_variation_selectable'), 9999, 2);
         add_filter('woocommerce_single_variation', array($this, 'replace_hidden_variation_add_to_cart_message'), 9999);
-        add_filter('woocommerce_variable_price_html', array($this, 'filter_variable_price_html_by_region'), 9999, 2);
-        add_filter('the_posts', array($this, 'filter_catalog_posts_with_hidden_variations'), 9999, 2);
 
         add_action('pre_get_terms', array($this, 'filter_product_cat_terms_query_by_region'), 9999, 1);
         add_filter('wp_nav_menu_objects', array($this, 'filter_nav_menu_items_by_region'), 9999, 2);
-
-        // Фікс прихованої категорії без 404 і без regex-ломання HTML
-        add_filter('pre_handle_404', array($this, 'prevent_404_for_hidden_product_category'), 10, 2);
-        add_action('wp', array($this, 'setup_hidden_category_archive_mode'), 20);
-        add_action('woocommerce_no_products_found', array($this, 'render_hidden_category_notice'), 1);
-        add_filter('body_class', array($this, 'fix_hidden_category_body_class'), 9999);
-        add_action('wp_enqueue_scripts', array($this, 'enqueue_hidden_category_layout_fix'), 999);
-        add_filter('woocommerce_get_breadcrumb', array($this, 'fix_hidden_category_breadcrumbs'), 9999, 2);
-    }
-
-    private function are_all_variations_hidden_for_region($product, $region) {
-        if (!$product instanceof WC_Product_Variable) {
-            return false;
-        }
-
-        $variation_ids = $product->get_children();
-        if (empty($variation_ids)) {
-            return false;
-        }
-
-        foreach ($variation_ids as $variation_id) {
-            $variation = wc_get_product($variation_id);
-
-            if (!$variation || !($variation instanceof WC_Product_Variation)) {
-                continue;
-            }
-
-            if (!$this->is_product_hidden_for_region((int) $variation_id, $region)) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private function should_hide_product_from_catalog_by_region($product_id) {
-        $region = $this->context->get_current_region();
-        if ($region === 'kharkiv') {
-            return false;
-        }
-
-        $product = wc_get_product($product_id);
-        if (!$product) {
-            return false;
-        }
-
-        // Якщо сам товар прихований — ховаємо
-        if ($this->is_product_hidden_for_region((int) $product_id, $region)) {
-            return true;
-        }
-
-        // Якщо це variable product і всі його варіації приховані — теж ховаємо
-        if ($product instanceof WC_Product_Variable && $this->are_all_variations_hidden_for_region($product, $region)) {
-            return true;
-        }
-
-        return false;
-    }
-
-    public function filter_catalog_posts_with_hidden_variations($posts, $query) {
-        if (is_admin() || !($query instanceof WP_Query) || empty($posts)) {
-            return $posts;
-        }
-
-        $region = $this->context->get_current_region();
-        if ($region === 'kharkiv') {
-            return $posts;
-        }
-
-        $is_product_context = $query->is_main_query() && (
-            $query->is_tax('product_cat') ||
-            $query->is_post_type_archive('product') ||
-            $query->is_search()
-        );
-
-        if (!$is_product_context) {
-            return $posts;
-        }
-
-        $filtered = array();
-
-        foreach ($posts as $post) {
-            if (empty($post->ID) || $post->post_type !== 'product') {
-                $filtered[] = $post;
-                continue;
-            }
-
-            if ($this->should_hide_product_from_catalog_by_region((int) $post->ID)) {
-                continue;
-            }
-
-            $filtered[] = $post;
-        }
-
-        return array_values($filtered);
-    }
-
-    private function get_min_regional_variation_price($product, $region) {
-        if (!$product instanceof WC_Product_Variable) {
-            return null;
-        }
-
-        $variation_ids = $product->get_children();
-        if (empty($variation_ids)) {
-            return null;
-        }
-
-        $prices = array();
-
-        foreach ($variation_ids as $variation_id) {
-            $variation = wc_get_product($variation_id);
-
-            if (!$variation || !($variation instanceof WC_Product_Variation)) {
-                continue;
-            }
-
-            // Якщо варіація прихована в регіоні — пропускаємо
-            if ($this->is_product_hidden_for_region($variation_id, $region)) {
-                continue;
-            }
-
-            $regional_price = $this->get_regional_price_for_product_by_region($variation, $region);
-
-            if ($regional_price !== null && $regional_price !== '') {
-                $regional_price = (float) wc_format_decimal($regional_price);
-
-                if ($regional_price > 0) {
-                    $prices[] = $regional_price;
-                }
-            }
-        }
-
-        if (empty($prices)) {
-            return null;
-        }
-
-        return min($prices);
-    }
-
-    private function get_max_regional_variation_price($product, $region) {
-        if (!$product instanceof WC_Product_Variable) {
-            return null;
-        }
-
-        $variation_ids = $product->get_children();
-        if (empty($variation_ids)) {
-            return null;
-        }
-
-        $prices = array();
-
-        foreach ($variation_ids as $variation_id) {
-            $variation = wc_get_product($variation_id);
-
-            if (!$variation || !($variation instanceof WC_Product_Variation)) {
-                continue;
-            }
-
-            if ($this->is_product_hidden_for_region($variation_id, $region)) {
-                continue;
-            }
-
-            $regional_price = $this->get_regional_price_for_product_by_region($variation, $region);
-
-            if ($regional_price !== null && $regional_price !== '') {
-                $regional_price = (float) wc_format_decimal($regional_price);
-
-                if ($regional_price > 0) {
-                    $prices[] = $regional_price;
-                }
-            }
-        }
-
-        if (empty($prices)) {
-            return null;
-        }
-
-        return max($prices);
-    }
-
-    public function filter_variable_price_html_by_region($price_html, $product) {
-        if (!$product instanceof WC_Product_Variable) {
-            return $price_html;
-        }
-
-        $region = $this->context->get_current_region();
-        if ($region === 'kharkiv') {
-            return $price_html;
-        }
-
-        if ($this->is_product_hidden_for_region($product->get_id(), $region)) {
-            return '<span class="price out-of-region">Недоступно у вибраному регіоні</span>';
-        }
-
-        $min_price = $this->get_min_regional_variation_price($product, $region);
-        if ($min_price === null) {
-            return $price_html;
-        }
-
-        return wc_price($min_price);
-    }
-
-    public function enqueue_hidden_category_layout_fix() {
-        if (is_admin()) {
-            return;
-        }
-
-        if (!is_tax('product_cat')) {
-            return;
-        }
-
-        $region = $this->context->get_current_region();
-        if ($region === 'kharkiv') {
-            return;
-        }
-
-        $term = get_queried_object();
-        if (!$term || empty($term->term_id)) {
-            return;
-        }
-
-        if (!$this->is_product_category_hidden_for_region((int) $term->term_id, $region)) {
-            return;
-        }
-
-        $css = '
-        body.tax-product_cat main#main-content.wd-content-layout.content-layout-wrapper.container {
-            display: grid !important;
-            grid-template-columns: minmax(260px, 3fr) minmax(0, 9fr) !important;
-            gap: 30px !important;
-            align-items: start !important;
-        }
-
-        body.tax-product_cat main#main-content.wd-content-layout.content-layout-wrapper.container > aside.wd-sidebar.sidebar-left {
-            grid-column: 1 !important;
-            order: 1 !important;
-            margin: 0 !important;
-            float: none !important;
-            align-self: start !important;
-        }
-
-        body.tax-product_cat main#main-content.wd-content-layout.content-layout-wrapper.container > .wd-content-area.site-content {
-            grid-column: 2 !important;
-            order: 2 !important;
-            min-width: 0 !important;
-            width: auto !important;
-            float: none !important;
-            align-self: start !important;
-        }
-
-        @media (max-width: 1024px) {
-            body.tax-product_cat main#main-content.wd-content-layout.content-layout-wrapper.container {
-                grid-template-columns: 1fr !important;
-            }
-
-            body.tax-product_cat main#main-content.wd-content-layout.content-layout-wrapper.container > aside.wd-sidebar.sidebar-left,
-            body.tax-product_cat main#main-content.wd-content-layout.content-layout-wrapper.container > .wd-content-area.site-content {
-                grid-column: auto !important;
-            }
-        }';
-
-        wp_register_style('rockside-hidden-category-layout-fix', false);
-        wp_enqueue_style('rockside-hidden-category-layout-fix');
-        wp_add_inline_style('rockside-hidden-category-layout-fix', $css);
-    }
-
-    public function fix_hidden_category_breadcrumbs($crumbs, $breadcrumb) {
-        if (!is_array($crumbs) || empty($crumbs)) {
-            return $crumbs;
-        }
-
-        if (!is_tax('product_cat')) {
-            return $crumbs;
-        }
-
-        $region = $this->context->get_current_region();
-        if ($region === 'kharkiv') {
-            return $crumbs;
-        }
-
-        $term = get_queried_object();
-        if (!$term || empty($term->term_id)) {
-            return $crumbs;
-        }
-
-        if (!$this->is_product_category_hidden_for_region((int) $term->term_id, $region)) {
-            return $crumbs;
-        }
-
-        $filtered = array();
-
-        foreach ($crumbs as $crumb) {
-            if (!is_array($crumb) || empty($crumb[0])) {
-                $filtered[] = $crumb;
-                continue;
-            }
-
-            $label = trim(wp_strip_all_tags((string) $crumb[0]));
-
-            if (
-                preg_match('/^Сторінка\s+\d+$/u', $label) ||
-                preg_match('/^Page\s+\d+$/i', $label)
-            ) {
-                continue;
-            }
-
-            $filtered[] = $crumb;
-        }
-
-        return array_values($filtered);
     }
 
     public function render_region_hidden_field() {
@@ -595,6 +283,73 @@ class Rockside_Regional_Pricing {
         return $html;
     }
 
+    private function get_min_regional_variation_price($product, $region) {
+        if (!$product instanceof WC_Product_Variable) {
+            return null;
+        }
+
+        $variation_ids = $product->get_children();
+        if (empty($variation_ids)) {
+            return null;
+        }
+
+        $prices = array();
+
+        foreach ($variation_ids as $variation_id) {
+            $variation = wc_get_product($variation_id);
+
+            if (!$variation || !($variation instanceof WC_Product_Variation)) {
+                continue;
+            }
+
+            if ($this->is_product_hidden_for_region((int) $variation_id, $region)) {
+                continue;
+            }
+
+            $regional_price = $this->get_regional_price_for_product_by_region($variation, $region);
+
+            if ($regional_price !== null && $regional_price !== '') {
+                $regional_price = (float) wc_format_decimal($regional_price);
+
+                if ($regional_price > 0) {
+                    $prices[] = $regional_price;
+                }
+            }
+        }
+
+        if (empty($prices)) {
+            return null;
+        }
+
+        return min($prices);
+    }
+
+    public function filter_variable_price_html_by_region($price_html, $product) {
+        if (!$product instanceof WC_Product_Variable) {
+            return $price_html;
+        }
+
+        $region = $this->context->get_current_region();
+        if ($region === 'kharkiv') {
+            return $price_html;
+        }
+
+        if ($this->is_product_hidden_for_region($product->get_id(), $region)) {
+            return '<span class="price out-of-region">Недоступно у вибраному регіоні</span>';
+        }
+
+        if ($this->are_all_variations_hidden_for_region($product, $region)) {
+            return '<span class="price out-of-region">Недоступно у вибраному регіоні</span>';
+        }
+
+        $min_price = $this->get_min_regional_variation_price($product, $region);
+        if ($min_price === null) {
+            return $price_html;
+        }
+
+        return wc_price($min_price);
+    }
+
     public function filter_product_purchasable_by_region($purchasable, $product) {
         if (!$product instanceof WC_Product) {
             return $purchasable;
@@ -629,6 +384,7 @@ class Rockside_Regional_Pricing {
             return true;
         }
 
+        // окремий hide flag на самій варіації
         if ($parent_id && $this->is_enabled_hide_flag(get_post_meta($product_id, $meta_key, true))) {
             return true;
         }
@@ -912,26 +668,6 @@ class Rockside_Regional_Pricing {
             return;
         }
 
-        // Головний кейс: прихована product_cat повинна бути звичайною archive-сторінкою,
-        // але з порожнім loop
-        if ($query->is_main_query() && $query->is_tax('product_cat')) {
-            $term = $query->get_queried_object();
-
-            if ($term && !empty($term->term_id) && $this->is_product_category_hidden_for_region((int) $term->term_id, $region)) {
-                $this->hidden_category_mode = true;
-
-                // Залишаємо archive product category, але без товарів
-                $query->set('post_type', 'product');
-                $query->set('post__in', array(0));
-                $query->set('posts_per_page', 12);
-                $query->set('no_found_rows', true);
-                $query->set('paged', max(1, (int) get_query_var('paged')));
-                $query->set('offset', 0);
-
-                return;
-            }
-        }
-
         if ($this->is_single_product_query($query)) {
             return;
         }
@@ -982,7 +718,7 @@ class Rockside_Regional_Pricing {
         }
 
         return array_values(array_filter($related_posts, function ($related_id) {
-            return !$this->is_product_hidden_for_current_region($related_id);
+            return !$this->should_hide_product_from_catalog_by_region((int) $related_id);
         }));
     }
 
@@ -1044,6 +780,91 @@ class Rockside_Regional_Pricing {
         }
 
         return false;
+    }
+
+    private function are_all_variations_hidden_for_region($product, $region) {
+        if (!$product instanceof WC_Product_Variable) {
+            return false;
+        }
+
+        $variation_ids = $product->get_children();
+        if (empty($variation_ids)) {
+            return false;
+        }
+
+        foreach ($variation_ids as $variation_id) {
+            $variation = wc_get_product($variation_id);
+
+            if (!$variation || !($variation instanceof WC_Product_Variation)) {
+                continue;
+            }
+
+            if (!$this->is_product_hidden_for_region((int) $variation_id, $region)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function should_hide_product_from_catalog_by_region($product_id) {
+        $region = $this->context->get_current_region();
+        if ($region === 'kharkiv') {
+            return false;
+        }
+
+        $product = wc_get_product($product_id);
+        if (!$product) {
+            return false;
+        }
+
+        if ($this->is_product_hidden_for_region((int) $product_id, $region)) {
+            return true;
+        }
+
+        if ($product instanceof WC_Product_Variable && $this->are_all_variations_hidden_for_region($product, $region)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    public function filter_catalog_posts_with_hidden_variations($posts, $query) {
+        if (is_admin() || !($query instanceof WP_Query) || empty($posts)) {
+            return $posts;
+        }
+
+        $region = $this->context->get_current_region();
+        if ($region === 'kharkiv') {
+            return $posts;
+        }
+
+        $is_product_context = $query->is_main_query() && (
+            $query->is_tax('product_cat') ||
+            $query->is_post_type_archive('product') ||
+            $query->is_search()
+        );
+
+        if (!$is_product_context) {
+            return $posts;
+        }
+
+        $filtered = array();
+
+        foreach ($posts as $post) {
+            if (empty($post->ID) || $post->post_type !== 'product') {
+                $filtered[] = $post;
+                continue;
+            }
+
+            if ($this->should_hide_product_from_catalog_by_region((int) $post->ID)) {
+                continue;
+            }
+
+            $filtered[] = $post;
+        }
+
+        return array_values($filtered);
     }
 
     public function keep_hidden_variation_selectable($active, $variation) {
@@ -1191,6 +1012,10 @@ class Rockside_Regional_Pricing {
             return '_rockside_hide_in_lviv';
         }
 
+        if ($region === 'odesa') {
+            return '_rockside_hide_in_odesa';
+        }
+
         return '';
     }
 
@@ -1258,7 +1083,7 @@ class Rockside_Regional_Pricing {
             return;
         }
 
-        // Не виключаємо термін, якщо WP резолвить конкретну category archive
+        // дозволяємо WP резолвити конкретну category archive, навіть якщо вона прихована
         if ($this->is_specific_term_resolution_query($term_query)) {
             return;
         }
@@ -1365,7 +1190,7 @@ class Rockside_Regional_Pricing {
         }
 
         $path = trim((string) $parts['path'], '/');
-        $path = preg_replace('#^(kyiv|lviv)(/|$)#', '', $path);
+        $path = preg_replace('#^(kyiv|lviv|odesa)(/|$)#', '', $path);
         $path = trim((string) $path, '/');
 
         if ($path === '') {
@@ -1392,131 +1217,8 @@ class Rockside_Regional_Pricing {
         return (int) $term->term_id;
     }
 
-    // === Hidden category mode ===
-
-    public function prevent_404_for_hidden_product_category($preempt, $wp_query) {
-        if (is_admin() || !($wp_query instanceof WP_Query)) {
-            return $preempt;
-        }
-
-        $region = $this->context->get_current_region();
-        if ($region === 'kharkiv') {
-            return $preempt;
-        }
-
-        if (!$wp_query->is_main_query()) {
-            return $preempt;
-        }
-
-        $product_cat = $wp_query->get('product_cat');
-        if (empty($product_cat) || !is_string($product_cat)) {
-            return $preempt;
-        }
-
-        $slug = trim($product_cat);
-        if ($slug === '') {
-            return $preempt;
-        }
-
-        $term = get_term_by('slug', $slug, 'product_cat');
-        if (!$term || is_wp_error($term)) {
-            return $preempt;
-        }
-
-        if (!$this->is_product_category_hidden_for_region((int) $term->term_id, $region)) {
-            return $preempt;
-        }
-
-        $wp_query->is_404 = false;
-        if (method_exists($wp_query, 'set_404')) {
-            $wp_query->set_404(false);
-        }
-
-        $wp_query->is_archive = true;
-        $wp_query->is_tax = true;
-        $wp_query->is_category = false;
-        $wp_query->is_tag = false;
-        $wp_query->is_singular = false;
-        $wp_query->is_page = false;
-        $wp_query->is_single = false;
-        $wp_query->is_home = false;
-
-        $wp_query->queried_object = $term;
-        $wp_query->queried_object_id = (int) $term->term_id;
-
-        status_header(200);
-
-        return true;
-    }
-
-    public function setup_hidden_category_archive_mode() {
-        if (!is_tax('product_cat')) {
-            return;
-        }
-
-        $region = $this->context->get_current_region();
-        if ($region === 'kharkiv') {
-            return;
-        }
-
-        $term = get_queried_object();
-        if (!$term || empty($term->term_id)) {
-            return;
-        }
-
-        if (!$this->is_product_category_hidden_for_region((int) $term->term_id, $region)) {
-            return;
-        }
-
-        $this->hidden_category_mode = true;
-
-        // Ховаємо стандартний опис category
-        remove_action('woocommerce_archive_description', 'woocommerce_taxonomy_archive_description', 10);
-        remove_action('woocommerce_archive_description', 'woocommerce_product_archive_description', 10);
-
-        // Прибираємо стандартні loop-блоки для пустого каталогу
-        remove_action('woocommerce_before_shop_loop', 'woocommerce_result_count', 20);
-        remove_action('woocommerce_before_shop_loop', 'woocommerce_catalog_ordering', 30);
-
-        remove_action('woocommerce_after_shop_loop', 'woocommerce_pagination', 10);
-    }
-
-    public function render_hidden_category_notice() {
-        if (!$this->hidden_category_mode) {
-            return;
-        }
-
-        echo '<div class="woocommerce-no-products-found"><div class="woocommerce-info" role="status">Товар не доступний у Вашому регіоні.</div></div>';
-    }
-
-    public function fix_hidden_category_body_class($classes) {
-        if (is_admin() || !is_tax('product_cat')) {
-            return $classes;
-        }
-
-        if (!$this->hidden_category_mode) {
-            return $classes;
-        }
-
-        if (!is_array($classes)) {
-            return $classes;
-        }
-
-        $classes = array_values(array_diff($classes, array('error404')));
-
-        if (!in_array('archive', $classes, true)) {
-            $classes[] = 'archive';
-        }
-
-        if (!in_array('tax-product_cat', $classes, true)) {
-            $classes[] = 'tax-product_cat';
-        }
-
-        return $classes;
-    }
-
     public function maybe_redirect_hidden_product_category() {
-        // Більше не редиректимо приховану категорію на головну.
+        // більше не редиректимо приховану категорію на головну
         return;
     }
 }

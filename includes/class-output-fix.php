@@ -122,6 +122,8 @@ class Rockside_Regional_Output_Fix {
             $meta_key = '_rockside_hide_in_kyiv';
         } elseif ($region === 'lviv') {
             $meta_key = '_rockside_hide_in_lviv';
+        } elseif ($region === 'odesa') {
+            $meta_key = '_rockside_hide_in_odesa';
         }
 
         if (!$meta_key) {

@@ -47,8 +47,9 @@ class Rockside_Regional_Admin {
         }
 
         foreach ($items as $base_id) {
-            $kyiv_linked = (int) get_post_meta($base_id, '_rockside_kyiv_page_id', true);
-            $lviv_linked = (int) get_post_meta($base_id, '_rockside_lviv_page_id', true);
+            $kyiv_linked  = (int) get_post_meta($base_id, '_rockside_kyiv_page_id', true);
+            $lviv_linked  = (int) get_post_meta($base_id, '_rockside_lviv_page_id', true);
+            $odesa_linked = (int) get_post_meta($base_id, '_rockside_odesa_page_id', true);
 
             if ($kyiv_linked === (int) $post_id) {
                 return array(
@@ -61,6 +62,13 @@ class Rockside_Regional_Admin {
                 return array(
                     'base_id' => (int) $base_id,
                     'region'  => 'lviv',
+                );
+            }
+
+            if ($odesa_linked === (int) $post_id) {
+                return array(
+                    'base_id' => (int) $base_id,
+                    'region'  => 'odesa',
                 );
             }
         }
@@ -90,6 +98,12 @@ class Rockside_Regional_Admin {
             'sanitize_callback' => array($this, 'sanitize_feed_url'),
             'default' => '',
         ));
+
+        register_setting('rockside_regions_settings', 'rockside_enabled_switcher_regions', array(
+            'type' => 'array',
+            'sanitize_callback' => array($this, 'sanitize_enabled_switcher_regions'),
+            'default' => array(),
+        ));
     }
 
     public function sanitize_yes_no($value) {
@@ -106,9 +120,33 @@ class Rockside_Regional_Admin {
         return esc_url_raw($value);
     }
 
+    public function sanitize_enabled_switcher_regions($value) {
+        if (!is_array($value)) {
+            return array();
+        }
+
+        $allowed = array('kharkiv', 'kyiv', 'lviv', 'odesa');
+        $clean = array();
+
+        foreach ($value as $region) {
+            $region = sanitize_key($region);
+
+            if (in_array($region, $allowed, true)) {
+                $clean[] = $region;
+            }
+        }
+
+        return array_values(array_unique($clean));
+    }
+
     public function render_settings_page() {
         if (!current_user_can('manage_options')) {
             return;
+        }
+
+        $enabled_regions = get_option('rockside_enabled_switcher_regions', array());
+        if (!is_array($enabled_regions)) {
+            $enabled_regions = array();
         }
         ?>
         <div class="wrap">
@@ -129,6 +167,38 @@ class Rockside_Regional_Admin {
                                 >
                                 Показувати popup вибору регіону на першому візиті.
                             </label>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <th scope="row">Регіони у перемикачі на фронті</th>
+                        <td>
+                            <fieldset>
+                                <label style="display:block; margin-bottom:6px;">
+                                    <input type="checkbox" name="rockside_enabled_switcher_regions[]" value="kharkiv" <?php checked(in_array('kharkiv', $enabled_regions, true)); ?>>
+                                    Харків
+                                </label>
+
+                                <label style="display:block; margin-bottom:6px;">
+                                    <input type="checkbox" name="rockside_enabled_switcher_regions[]" value="kyiv" <?php checked(in_array('kyiv', $enabled_regions, true)); ?>>
+                                    Київ
+                                </label>
+
+                                <label style="display:block; margin-bottom:6px;">
+                                    <input type="checkbox" name="rockside_enabled_switcher_regions[]" value="lviv" <?php checked(in_array('lviv', $enabled_regions, true)); ?>>
+                                    Львів
+                                </label>
+
+                                <label style="display:block; margin-bottom:6px;">
+                                    <input type="checkbox" name="rockside_enabled_switcher_regions[]" value="odesa" <?php checked(in_array('odesa', $enabled_regions, true)); ?>>
+                                    Одеса
+                                </label>
+                            </fieldset>
+
+                            <p class="description">
+                                Оберіть регіони, які треба показувати в перемикачі на фронті.
+                                Якщо нічого не обрано — у перемикачі буде тільки Харків.
+                            </p>
                         </td>
                     </tr>
 
@@ -178,6 +248,16 @@ class Rockside_Regional_Admin {
             'value'             => $this->get_safe_scalar_meta(get_the_ID(), '_price_lviv'),
         ));
 
+        woocommerce_wp_text_input(array(
+            'id'                => '_price_odesa',
+            'label'             => 'Ціна Одеса',
+            'type'              => 'number',
+            'custom_attributes' => array('step' => '0.01', 'min' => '0'),
+            'desc_tip'          => true,
+            'description'       => 'Регіональна ціна для Одеси.',
+            'value'             => $this->get_safe_scalar_meta(get_the_ID(), '_price_odesa'),
+        ));
+
         woocommerce_wp_checkbox(array(
             'id'          => '_hide_in_kyiv',
             'label'       => 'Приховати в Києві',
@@ -188,6 +268,12 @@ class Rockside_Regional_Admin {
             'id'          => '_hide_in_lviv',
             'label'       => 'Приховати у Львові',
             'description' => 'Товар не буде доступний у Львові.',
+        ));
+
+        woocommerce_wp_checkbox(array(
+            'id'          => '_hide_in_odesa',
+            'label'       => 'Приховати в Одесі',
+            'description' => 'Товар не буде доступний в Одесі.',
         ));
 
         echo '</div>';
@@ -220,6 +306,18 @@ class Rockside_Regional_Admin {
             'description'       => 'Залиш порожнім, щоб використовувалась базова ціна варіації.',
         ));
 
+        woocommerce_wp_text_input(array(
+            'id'                => '_price_odesa_' . $variation_id,
+            'name'              => '_price_odesa[' . $variation_id . ']',
+            'value'             => $this->get_safe_scalar_meta($variation_id, '_price_odesa'),
+            'label'             => 'Ціна Одеса',
+            'type'              => 'number',
+            'wrapper_class'     => 'form-row form-row-full',
+            'custom_attributes' => array('step' => '0.01', 'min' => '0'),
+            'desc_tip'          => true,
+            'description'       => 'Залиш порожнім, щоб використовувалась базова ціна варіації.',
+        ));
+
         woocommerce_wp_checkbox(array(
             'id'            => '_hide_in_kyiv_' . $variation_id,
             'name'          => '_hide_in_kyiv[' . $variation_id . ']',
@@ -235,6 +333,14 @@ class Rockside_Regional_Admin {
             'label'         => 'Приховати у Львові',
             'wrapper_class' => 'form-row form-row-last',
         ));
+
+        woocommerce_wp_checkbox(array(
+            'id'            => '_hide_in_odesa_' . $variation_id,
+            'name'          => '_hide_in_odesa[' . $variation_id . ']',
+            'value'         => get_post_meta($variation_id, '_hide_in_odesa', true),
+            'label'         => 'Приховати в Одесі',
+            'wrapper_class' => 'form-row form-row-full',
+        ));
     }
 
     public function save_simple_product_fields($product) {
@@ -242,8 +348,11 @@ class Rockside_Regional_Admin {
 
         $this->save_decimal_post_meta($product_id, '_price_kyiv');
         $this->save_decimal_post_meta($product_id, '_price_lviv');
+        $this->save_decimal_post_meta($product_id, '_price_odesa');
+
         $this->save_checkbox_post_meta($product_id, '_hide_in_kyiv');
         $this->save_checkbox_post_meta($product_id, '_hide_in_lviv');
+        $this->save_checkbox_post_meta($product_id, '_hide_in_odesa');
     }
 
     public function save_product_region_meta_fallback($post_id, $post, $update) {
@@ -265,8 +374,11 @@ class Rockside_Regional_Admin {
 
         $this->save_checkbox_post_meta($post_id, '_hide_in_kyiv');
         $this->save_checkbox_post_meta($post_id, '_hide_in_lviv');
+        $this->save_checkbox_post_meta($post_id, '_hide_in_odesa');
+
         $this->save_decimal_post_meta($post_id, '_price_kyiv');
         $this->save_decimal_post_meta($post_id, '_price_lviv');
+        $this->save_decimal_post_meta($post_id, '_price_odesa');
     }
 
     public function save_variation_fields($variation_id, $index) {
@@ -276,9 +388,13 @@ class Rockside_Regional_Admin {
         $price_lviv = isset($_POST['_price_lviv'][$variation_id])
             ? wc_clean(wp_unslash($_POST['_price_lviv'][$variation_id]))
             : '';
+        $price_odesa = isset($_POST['_price_odesa'][$variation_id])
+            ? wc_clean(wp_unslash($_POST['_price_odesa'][$variation_id]))
+            : '';
 
         $this->update_decimal_meta($variation_id, '_price_kyiv', $price_kyiv);
         $this->update_decimal_meta($variation_id, '_price_lviv', $price_lviv);
+        $this->update_decimal_meta($variation_id, '_price_odesa', $price_odesa);
 
         if (isset($_POST['_hide_in_kyiv'][$variation_id])) {
             update_post_meta($variation_id, '_hide_in_kyiv', 'yes');
@@ -290,6 +406,12 @@ class Rockside_Regional_Admin {
             update_post_meta($variation_id, '_hide_in_lviv', 'yes');
         } else {
             delete_post_meta($variation_id, '_hide_in_lviv');
+        }
+
+        if (isset($_POST['_hide_in_odesa'][$variation_id])) {
+            update_post_meta($variation_id, '_hide_in_odesa', 'yes');
+        } else {
+            delete_post_meta($variation_id, '_hide_in_odesa');
         }
     }
 
@@ -370,7 +492,15 @@ class Rockside_Regional_Admin {
             $base_id = (int) $linked_context['base_id'];
             $region  = $linked_context['region'];
 
-            $region_label = $region === 'kyiv' ? 'Київ' : 'Львів';
+            $region_label = 'Харків';
+            if ($region === 'kyiv') {
+                $region_label = 'Київ';
+            } elseif ($region === 'lviv') {
+                $region_label = 'Львів';
+            } elseif ($region === 'odesa') {
+                $region_label = 'Одеса';
+            }
+
             $item_label = $post->post_type === 'post' ? 'запис' : 'сторінка';
             $base_label = $post->post_type === 'post' ? 'оригінальний запис' : 'оригінальна сторінка';
             $base_title = get_the_title($base_id);
@@ -386,8 +516,9 @@ class Rockside_Regional_Admin {
             return;
         }
 
-        $kyiv_page_id = (int) get_post_meta($post->ID, '_rockside_kyiv_page_id', true);
-        $lviv_page_id = (int) get_post_meta($post->ID, '_rockside_lviv_page_id', true);
+        $kyiv_page_id  = (int) get_post_meta($post->ID, '_rockside_kyiv_page_id', true);
+        $lviv_page_id  = (int) get_post_meta($post->ID, '_rockside_lviv_page_id', true);
+        $odesa_page_id = (int) get_post_meta($post->ID, '_rockside_odesa_page_id', true);
 
         $post_type = $post->post_type;
         $items = get_posts(array(
@@ -401,6 +532,7 @@ class Rockside_Regional_Admin {
         $title = $post_type === 'post' ? 'Пов’язані записи для регіонів' : 'Пов’язані сторінки для регіонів';
         $label_kyiv = $post_type === 'post' ? 'Запис Київ' : 'Сторінка Київ';
         $label_lviv = $post_type === 'post' ? 'Запис Львів' : 'Сторінка Львів';
+        $label_odesa = $post_type === 'post' ? 'Запис Одеса' : 'Сторінка Одеса';
 
         echo '<p><strong>' . esc_html($title) . '</strong></p>';
 
@@ -426,8 +558,20 @@ class Rockside_Regional_Admin {
         }
         echo '</select></label></p>';
 
-        $has_kyiv_linked = $kyiv_page_id > 0;
-        $has_lviv_linked = $lviv_page_id > 0;
+        echo '<p><label>' . esc_html($label_odesa) . '<br>';
+        echo '<select name="rockside_odesa_page_id" style="width:100%">';
+        echo '<option value="">— Не вибрано —</option>';
+        foreach ($items as $item) {
+            if ((int) $item->ID === (int) $post->ID) {
+                continue;
+            }
+            echo '<option value="' . esc_attr($item->ID) . '" ' . selected($odesa_page_id, $item->ID, false) . '>' . esc_html($item->post_title) . ' (#' . (int) $item->ID . ')</option>';
+        }
+        echo '</select></label></p>';
+
+        $has_kyiv_linked  = $kyiv_page_id > 0;
+        $has_lviv_linked  = $lviv_page_id > 0;
+        $has_odesa_linked = $odesa_page_id > 0;
 
         echo '<hr>';
         echo '<p><strong>SEO override</strong></p>';
@@ -444,6 +588,13 @@ class Rockside_Regional_Admin {
         } else {
             echo '<p><label>Title Львів<br><input type="text" style="width:100%" name="rockside_lviv_title" value="' . esc_attr(get_post_meta($post->ID, '_rockside_lviv_title', true)) . '"></label></p>';
             echo '<p><label>Description Львів<br><textarea style="width:100%" rows="4" name="rockside_lviv_description">' . esc_textarea(get_post_meta($post->ID, '_rockside_lviv_description', true)) . '</textarea></label></p>';
+        }
+
+        if ($has_odesa_linked) {
+            echo '<p><em>Для Одеси вибрана окрема пов’язана ' . esc_html($post_type === 'post' ? 'запис' : 'сторінка') . '. SEO override для Одеси не використовується.</em></p>';
+        } else {
+            echo '<p><label>Title Одеса<br><input type="text" style="width:100%" name="rockside_odesa_title" value="' . esc_attr(get_post_meta($post->ID, '_rockside_odesa_title', true)) . '"></label></p>';
+            echo '<p><label>Description Одеса<br><textarea style="width:100%" rows="4" name="rockside_odesa_description">' . esc_textarea(get_post_meta($post->ID, '_rockside_odesa_description', true)) . '</textarea></label></p>';
         }
     }
 
@@ -470,8 +621,9 @@ class Rockside_Regional_Admin {
             return;
         }
 
-        $kyiv_page_id = isset($_POST['rockside_kyiv_page_id']) ? absint(wp_unslash($_POST['rockside_kyiv_page_id'])) : 0;
-        $lviv_page_id = isset($_POST['rockside_lviv_page_id']) ? absint(wp_unslash($_POST['rockside_lviv_page_id'])) : 0;
+        $kyiv_page_id  = isset($_POST['rockside_kyiv_page_id']) ? absint(wp_unslash($_POST['rockside_kyiv_page_id'])) : 0;
+        $lviv_page_id  = isset($_POST['rockside_lviv_page_id']) ? absint(wp_unslash($_POST['rockside_lviv_page_id'])) : 0;
+        $odesa_page_id = isset($_POST['rockside_odesa_page_id']) ? absint(wp_unslash($_POST['rockside_odesa_page_id'])) : 0;
 
         if ($kyiv_page_id > 0) {
             update_post_meta($post_id, '_rockside_kyiv_page_id', $kyiv_page_id);
@@ -483,6 +635,12 @@ class Rockside_Regional_Admin {
             update_post_meta($post_id, '_rockside_lviv_page_id', $lviv_page_id);
         } else {
             delete_post_meta($post_id, '_rockside_lviv_page_id');
+        }
+
+        if ($odesa_page_id > 0) {
+            update_post_meta($post_id, '_rockside_odesa_page_id', $odesa_page_id);
+        } else {
+            delete_post_meta($post_id, '_rockside_odesa_page_id');
         }
 
         if ($kyiv_page_id > 0) {
@@ -517,11 +675,28 @@ class Rockside_Regional_Admin {
             );
         }
 
+        if ($odesa_page_id > 0) {
+            delete_post_meta($post_id, '_rockside_odesa_title');
+            delete_post_meta($post_id, '_rockside_odesa_description');
+        } else {
+            update_post_meta(
+                $post_id,
+                '_rockside_odesa_title',
+                isset($_POST['rockside_odesa_title']) ? sanitize_text_field(wp_unslash($_POST['rockside_odesa_title'])) : ''
+            );
+            update_post_meta(
+                $post_id,
+                '_rockside_odesa_description',
+                isset($_POST['rockside_odesa_description']) ? sanitize_textarea_field(wp_unslash($_POST['rockside_odesa_description'])) : ''
+            );
+        }
+
         error_log(
             'ROCKSIDE SAVE LINKED CONTENT: post_id=' . $post_id .
             ' post_type=' . get_post_type($post_id) .
             ' kyiv=' . $kyiv_page_id .
-            ' lviv=' . $lviv_page_id
+            ' lviv=' . $lviv_page_id .
+            ' odesa=' . $odesa_page_id
         );
     }
 
@@ -537,12 +712,18 @@ class Rockside_Regional_Admin {
             <input type="checkbox" name="rockside_hide_in_lviv" id="rockside_hide_in_lviv" value="yes">
             <p>Усі товари цієї категорії будуть приховані в регіоні Львів.</p>
         </div>
+        <div class="form-field term-region-wrap">
+            <label for="rockside_hide_in_odesa">Приховати в Одесі</label>
+            <input type="checkbox" name="rockside_hide_in_odesa" id="rockside_hide_in_odesa" value="yes">
+            <p>Усі товари цієї категорії будуть приховані в регіоні Одеса.</p>
+        </div>
         <?php
     }
 
     public function render_product_cat_edit_fields($term) {
-        $hide_in_kyiv = get_term_meta($term->term_id, '_rockside_hide_in_kyiv', true);
-        $hide_in_lviv = get_term_meta($term->term_id, '_rockside_hide_in_lviv', true);
+        $hide_in_kyiv  = get_term_meta($term->term_id, '_rockside_hide_in_kyiv', true);
+        $hide_in_lviv  = get_term_meta($term->term_id, '_rockside_hide_in_lviv', true);
+        $hide_in_odesa = get_term_meta($term->term_id, '_rockside_hide_in_odesa', true);
         ?>
         <tr class="form-field term-region-wrap">
             <th scope="row"><label for="rockside_hide_in_kyiv">Приховати в Києві</label></th>
@@ -562,11 +743,21 @@ class Rockside_Regional_Admin {
                 </label>
             </td>
         </tr>
+        <tr class="form-field term-region-wrap">
+            <th scope="row"><label for="rockside_hide_in_odesa">Приховати в Одесі</label></th>
+            <td>
+                <label>
+                    <input type="checkbox" name="rockside_hide_in_odesa" id="rockside_hide_in_odesa" value="yes" <?php checked($hide_in_odesa, 'yes'); ?>>
+                    Усі товари цієї категорії будуть приховані в регіоні Одеса.
+                </label>
+            </td>
+        </tr>
         <?php
     }
 
     public function save_product_cat_region_meta($term_id) {
         update_term_meta($term_id, '_rockside_hide_in_kyiv', isset($_POST['rockside_hide_in_kyiv']) ? 'yes' : 'no');
         update_term_meta($term_id, '_rockside_hide_in_lviv', isset($_POST['rockside_hide_in_lviv']) ? 'yes' : 'no');
+        update_term_meta($term_id, '_rockside_hide_in_odesa', isset($_POST['rockside_hide_in_odesa']) ? 'yes' : 'no');
     }
 }
